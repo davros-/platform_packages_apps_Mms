@@ -371,10 +371,6 @@ public class QuickMessage extends Activity {
         mMessageList.clear();
     }
 
-    private CharSequence formatMessage(String message) {
-        SpannableStringBuilder buf = new SpannableStringBuilder();
-    }
-
     /**
      * Supporting Classes
      */
