@@ -373,7 +373,7 @@ public class QuickMessage extends Activity {
 
     private CharSequence formatMessage(String message) {
         SpannableStringBuilder buf = new SpannableStringBuilder();
-
+}
 /**
      * Supporting Classes
      */
