@@ -37,29 +37,42 @@ import android.preference.PreferenceManager;
 import android.provider.ContactsContract.Profile;
 import android.support.v4.view.PagerAdapter;
 import android.support.v4.view.ViewPager;
+import android.text.InputFilter;
+import android.text.SpannableString;
 import android.text.SpannableStringBuilder;
+import android.text.Spanned;
 import android.text.TextUtils;
+import android.text.InputFilter.LengthFilter;
 import android.util.Log;
+import android.view.ContextMenu;
+import android.view.ContextMenu.ContextMenuInfo;
 import android.view.KeyEvent;
 import android.view.LayoutInflater;
+import android.view.MenuItem;
 import android.view.View;
 import android.view.View.OnClickListener;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
+import android.widget.AdapterView;
 import android.widget.Button;
 import android.widget.CursorAdapter;
 import android.widget.EditText;
+import android.widget.GridView;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.QuickContactBadge;
+import android.widget.SimpleAdapter;
 import android.widget.SimpleCursorAdapter;
 import android.widget.TextView;
+import android.widget.AdapterView.OnItemClickListener;
+import android.widget.AdapterView.OnItemLongClickListener;
 import android.widget.TextView.OnEditorActionListener;
 import android.widget.Toast;
 
+import com.android.mms.MmsConfig;
 import com.android.mms.R;
 import com.android.mms.data.Contact;
 import com.android.mms.data.Conversation;
@@ -67,12 +80,21 @@ import com.android.mms.templates.TemplatesProvider.Template;
 import com.android.mms.transaction.MessagingNotification;
 import com.android.mms.transaction.MessagingNotification.NotificationInfo;
 import com.android.mms.transaction.SmsMessageSender;
+import com.android.mms.ui.ImageAdapter;
+import com.android.mms.ui.MessageUtils;
 import com.android.mms.ui.MessagingPreferenceActivity;
 import com.android.mms.util.EmojiParser;
 import com.android.mms.util.SmileyParser;
 import com.google.android.mms.MmsException;
 
+import java.nio.charset.Charset;
+import java.nio.charset.CharsetEncoder;
+import java.text.Normalizer;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.regex.Pattern;
 
 public class QuickMessagePopup extends Activity implements
     LoaderManager.LoaderCallbacks<Cursor> {
@@ -115,10 +137,23 @@ public class QuickMessagePopup extends Activity implements
     private boolean mCloseClosesAll = false;
     private boolean mWakeAndUnlock = false;
     private boolean mDarkTheme = false;
+    private boolean mFullTimestamp = false;
+    private boolean mStripUnicode = false;
+    private boolean mEnableEmojis = false;
 
     // Message pager
     private ViewPager mMessagePager;
     private MessagePagerAdapter mPagerAdapter;
+
+    // Options menu items
+    private static final int MENU_INSERT_SMILEY         = 1;
+    private static final int MENU_INSERT_EMOJI          = 3;
+    private static final int MENU_ADD_TEMPLATE          = 2;
+
+    // Smiley and Emoji support
+    private AlertDialog mSmileyDialog;
+    private AlertDialog mEmojiDialog;
+    private View mEmojiView;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -133,9 +168,21 @@ public class QuickMessagePopup extends Activity implements
         mDarkTheme = MessagingPreferenceActivity.getQmDarkThemeEnabled(mContext);
         mNumTemplates = getTemplatesCount();
 
+        // Get the preferences
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(mContext);
+        mFullTimestamp = prefs.getBoolean(MessagingPreferenceActivity.FULL_TIMESTAMP, false);
+        mCloseClosesAll = prefs.getBoolean(MessagingPreferenceActivity.QM_CLOSE_ALL_ENABLED, false);
+        mWakeAndUnlock = prefs.getBoolean(MessagingPreferenceActivity.QM_LOCKSCREEN_ENABLED, false);
+        mDarkTheme = prefs.getBoolean(MessagingPreferenceActivity.QM_DARK_THEME_ENABLED, false);
+        mStripUnicode = prefs.getBoolean(MessagingPreferenceActivity.STRIP_UNICODE, false);
+        mEnableEmojis = prefs.getBoolean(MessagingPreferenceActivity.ENABLE_EMOJIS, false);
+
         // Set the window features and layout
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         setContentView(R.layout.dialog_quickmessage);
+
+        // Turn on the Options Menu
+        invalidateOptionsMenu();
 
         // Load the views and Parse the intent to show the QuickMessage
         setupViews();
@@ -274,8 +321,218 @@ public class QuickMessagePopup extends Activity implements
 
     /**
      * Supporting Utility functions
-     */
+    @Override
+    public void onCreateContextMenu(ContextMenu menu, View v, ContextMenuInfo menuInfo) {
+        super.onCreateContextMenu(menu, v, menuInfo);
 
+        menu.clear();
+
+        // Smileys menu item
+        menu.add(0, MENU_INSERT_SMILEY, 0, R.string.menu_insert_smiley)
+            .setIcon(R.drawable.ic_menu_emoticons);
+
+        // Emoji's menu item (if enabled)
+        if (mEnableEmojis) {
+            menu.add(0, MENU_INSERT_EMOJI, 0, R.string.menu_insert_emoji);
+        }
+
+        // Templates menu item, if there are defined templates
+        if (mNumTemplates > 0) {
+            menu.add(0, MENU_ADD_TEMPLATE, 0, R.string.template_insert)
+            .setIcon(android.R.drawable.ic_menu_add)
+            .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
+        }
+    }
+
+    @Override
+    public boolean onContextItemSelected(MenuItem item) {
+        switch (item.getItemId()) {
+            case MENU_INSERT_SMILEY:
+                showSmileyDialog();
+                return true;
+
+            case MENU_INSERT_EMOJI:
+                showEmojiDialog();
+                return true;
+
+            case MENU_ADD_TEMPLATE:
+                selectTemplate();
+                return true;
+
+            default:
+                return super.onContextItemSelected(item);
+        }
+    }
+
+    //==========================================================
+    // Utility methods
+    //==========================================================
+
+    /**
+     * Copied from ComposeMessageActivity.java, this method displays the available
+     * templates and allows the user to select and append it to the reply text. It
+     * has been modified to work with this class
+     */
+    private void selectTemplate() {
+        getLoaderManager().restartLoader(0, null, this);
+    }
+
+    /**
+     * Copied from ComposeMessageActivity.java, this method displays the available
+     * smileys and allows the user to select and append it to the reply text. It
+     * has been modified to work with this class
+     */
+    private void showSmileyDialog() {
+        if (mSmileyDialog == null) {
+            int[] icons = SmileyParser.DEFAULT_SMILEY_RES_IDS;
+            String[] names = getResources().getStringArray(
+                    SmileyParser.DEFAULT_SMILEY_NAMES);
+            final String[] texts = getResources().getStringArray(
+                    SmileyParser.DEFAULT_SMILEY_TEXTS);
+
+            final int N = names.length;
+
+            List<Map<String, ?>> entries = new ArrayList<Map<String, ?>>();
+            for (int i = 0; i < N; i++) {
+                // We might have different ASCII for the same icon, skip it if
+                // the icon is already added.
+                boolean added = false;
+                for (int j = 0; j < i; j++) {
+                    if (icons[i] == icons[j]) {
+                        added = true;
+                        break;
+                    }
+                }
+                if (!added) {
+                    HashMap<String, Object> entry = new HashMap<String, Object>();
+
+                    entry. put("icon", icons[i]);
+                    entry. put("name", names[i]);
+                    entry.put("text", texts[i]);
+                    entries.add(entry);
+                }
+            }
+
+            final SimpleAdapter a = new SimpleAdapter(
+                    this,
+                    entries,
+                    R.layout.smiley_menu_item,
+                    new String[] {"icon", "name", "text"},
+                    new int[] {R.id.smiley_icon, R.id.smiley_name, R.id.smiley_text});
+            SimpleAdapter.ViewBinder viewBinder = new SimpleAdapter.ViewBinder() {
+                @Override
+                public boolean setViewValue(View view, Object data, String textRepresentation) {
+                    if (view instanceof ImageView) {
+                        Drawable img = getResources().getDrawable((Integer)data);
+                        ((ImageView)view).setImageDrawable(img);
+                        return true;
+                    }
+                    return false;
+                }
+            };
+            a.setViewBinder(viewBinder);
+
+            AlertDialog.Builder b = new AlertDialog.Builder(this);
+            b.setTitle(getString(R.string.menu_insert_smiley));
+            b.setCancelable(true);
+            b.setAdapter(a, new DialogInterface.OnClickListener() {
+                @Override
+                @SuppressWarnings("unchecked")
+                public final void onClick(DialogInterface dialog, int which) {
+                    HashMap<String, Object> item = (HashMap<String, Object>) a.getItem(which);
+                    String smiley = (String)item.get("text");
+
+                    // Get the currently visible message and append the smiley
+                    QuickMessage qm = mMessageList.get(mCurrentPage);
+                    if (qm != null) {
+                        qm.getEditText().append(smiley);
+                    }
+
+                    dialog.dismiss();
+                }
+            });
+
+            mSmileyDialog = b.create();
+        }
+
+        mSmileyDialog.show();
+    }
+
+    /**
+     * Copied from ComposeMessageActivity.java, this method displays the available
+     * emoji's and allows the user to select and insert one or more into a emoji text
+     * string which can then me appended to the the reply text.  It has been modified
+     * to work with this class
+     */
+    private void showEmojiDialog() {
+        if (mEmojiDialog == null) {
+            int[] icons = EmojiParser.DEFAULT_EMOJI_RES_IDS;
+
+            int layout = R.layout.emoji_insert_view;
+            mEmojiView = getLayoutInflater().inflate(layout, null);
+
+            final GridView gridView = (GridView) mEmojiView.findViewById(R.id.emoji_grid_view);
+            gridView.setAdapter(new ImageAdapter(this, icons));
+            final EditText editText = (EditText) mEmojiView.findViewById(R.id.emoji_edit_text);
+            final Button button = (Button) mEmojiView.findViewById(R.id.emoji_button);
+
+            gridView.setOnItemClickListener(new OnItemClickListener() {
+                public void onItemClick(AdapterView<?> parent, View v, int position, long id) {
+                    // We use the new unified Unicode 6.1 emoji code points
+                    CharSequence emoji = EmojiParser.getInstance().addEmojiSpans(EmojiParser.mEmojiTexts[position]);
+                    editText.append(emoji);
+                }
+            });
+
+            gridView.setOnItemLongClickListener(new OnItemLongClickListener() {
+                @Override
+                public boolean onItemLongClick(AdapterView<?> parent, View view, int position,
+                        long id) {
+                    // We use the new unified Unicode 6.1 emoji code points
+                    CharSequence emoji = EmojiParser.getInstance().addEmojiSpans(EmojiParser.mEmojiTexts[position]);
+
+                    // Get the currently visible message and append the emoji
+                    QuickMessage qm = mMessageList.get(mCurrentPage);
+                    if (qm != null) {
+                        qm.getEditText().append(emoji);
+                    }
+                    mEmojiDialog.dismiss();
+                    return true;
+                }
+            });
+
+            button.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    // Get the currently visible message and append the emoji
+                    QuickMessage qm = mMessageList.get(mCurrentPage);
+                    if (qm != null) {
+                        qm.getEditText().append(editText.getText());
+                    }
+                    mEmojiDialog.dismiss();
+                }
+            });
+
+            AlertDialog.Builder b = new AlertDialog.Builder(this);
+            b.setTitle(getString(R.string.menu_insert_emoji));
+            b.setCancelable(true);
+            b.setView(mEmojiView);
+
+            mEmojiDialog = b.create();
+        }
+
+        final EditText editText = (EditText) mEmojiView.findViewById(R.id.emoji_edit_text);
+        editText.setText("");
+
+        mEmojiDialog.show();
+    }
+
+
+    /**
+     * This method dismisses the on screen keyboard if it is visible for the supplied qm
+     *
+     * @param qm - qm to check against
+     */
     private void dismissKeyboard(QuickMessage qm) {
         if (qm != null) {
             EditText editView = qm.getEditText();
@@ -286,6 +543,9 @@ public class QuickMessagePopup extends Activity implements
         }
     }
 
+    /**
+     * If 'Wake and unlock' is enabled, this method will unlock the screen
+     */
     private void unlockScreen() {
         // See if the lock screen should be disabled
         if (!mWakeAndUnlock) {
@@ -300,6 +560,9 @@ public class QuickMessagePopup extends Activity implements
         }
     }
 
+    /**
+     * Update the page indicator counter to show the currently selected visible page number
+     */
     public void updateMessageCounter() {
         String separator = mContext.getString(R.string.message_counter_separator);
         mQmMessageCounter.setText((mCurrentPage + 1) + " " + separator + " " + mMessageList.size());
@@ -309,6 +572,11 @@ public class QuickMessagePopup extends Activity implements
                     + " of " + mMessageList.size());
     }
 
+    /**
+     * Remove the supplied qm from the ViewPager and show the previous/older message
+     *
+     * @param qm
+     */
     public void showPreviousMessageWithRemove(QuickMessage qm) {
         if (qm != null) {
             if (DEBUG)
@@ -321,6 +589,11 @@ public class QuickMessagePopup extends Activity implements
         }
     }
 
+    /**
+     * Remove the supplied qm from the ViewPager and show the next/newer message
+     *
+     * @param qm
+     */
     public void showNextMessageWithRemove(QuickMessage qm) {
         if (qm != null) {
             if (DEBUG)
@@ -333,6 +606,12 @@ public class QuickMessagePopup extends Activity implements
         }
     }
 
+    /**
+     * Handle qm removal and the move to and display of the appropriate page
+     *
+     * @param gotoPage - page number to display after the removal
+     * @param removeMsg - qm to remove from ViewPager
+     */
     private void updatePages(int gotoPage, QuickMessage removeMsg) {
         mMessageList.remove(removeMsg);
         mPagerAdapter.notifyDataSetChanged();
@@ -345,6 +624,11 @@ public class QuickMessagePopup extends Activity implements
                     + mMessageList.size());
     }
 
+    /**
+     * Marks the supplied qm as read
+     *
+     * @param qm
+     */
     private void markCurrentMessageRead(QuickMessage qm) {
         if (qm != null) {
             Conversation con = Conversation.get(mContext, qm.getThreadId(), true);
@@ -357,6 +641,9 @@ public class QuickMessagePopup extends Activity implements
         }
     }
 
+    /**
+     * Marks all qm's in the message list as read
+     */
     private void markAllMessagesRead() {
         // This iterates through our MessageList and marks the contained threads as read
         for (QuickMessage qm : mMessageList) {
@@ -370,6 +657,13 @@ public class QuickMessagePopup extends Activity implements
         }
     }
 
+    /**
+     * Show the appropriate image for the QuickContact badge
+     *
+     * @param badge
+     * @param addr
+     * @param isSelf
+     */
     private void updateContactBadge(QuickContactBadge badge, String addr, boolean isSelf) {
         Drawable avatarDrawable;
         if (isSelf || !TextUtils.isEmpty(addr)) {
@@ -391,6 +685,12 @@ public class QuickMessagePopup extends Activity implements
         badge.setImageDrawable(avatarDrawable);
     }
 
+    /**
+     * Use standard api to send the supplied message
+     *
+     * @param message - message to send
+     * @param qm - qm to reply to (for sender details)
+     */
     private void sendQuickMessage(String message, QuickMessage qm) {
         if (message != null && qm != null) {
             long threadId = qm.getThreadId();
@@ -409,6 +709,12 @@ public class QuickMessagePopup extends Activity implements
         }
     }
 
+    /**
+     * Clears the status bar notification and, optionally, mark all messages as read
+     * This is used to clean up when we are done with all qm's
+     *
+     * @param markAsRead - should remaining qm's be maked as read?
+     */
     private void clearNotification(boolean markAsRead) {
         // Dismiss the notification that brought us here.
         NotificationManager notificationManager =
@@ -427,6 +733,12 @@ public class QuickMessagePopup extends Activity implements
             Log.d(LOG_TAG, "clearNotification(): Message list cleared. Size = " + mMessageList.size());
     }
 
+    /**
+     * This method formats the message text to include smiley and emoji graphics as appropriate
+     *
+     * @param message - message to format
+     * @return - formatted message
+     */
     private CharSequence formatMessage(String message) {
         SpannableStringBuilder buf = new SpannableStringBuilder();
 
@@ -446,7 +758,11 @@ public class QuickMessagePopup extends Activity implements
         return buf;
     }
 
-    // Templates support
+    /**
+     * This method queries the Templates database and returns the count of templates
+     *
+     * @return - number of templates
+     */
     private int getTemplatesCount() {
         // We need to query the database to get the number of templates once in onCreate()
         // This is probably not the most elegant solution as this query is not an AsyncTask
@@ -460,10 +776,9 @@ public class QuickMessagePopup extends Activity implements
         return numColumns;
     }
 
-    private void selectTemplate() {
-        getLoaderManager().restartLoader(0, null, this);
-    }
-
+    /**
+     * Async data loader used for loading and displaying Templates
+     */
     @Override
     public Loader<Cursor> onCreateLoader(int id, Bundle args) {
         return new CursorLoader(this, Template.CONTENT_URI, null, null, null, null);
@@ -483,6 +798,9 @@ public class QuickMessagePopup extends Activity implements
     public void onLoaderReset(Loader<Cursor> loader) {
     }
 
+    /**
+     * This displays the Templates selection dialog
+     */
     @Override
     protected Dialog onCreateDialog(int id, Bundle args) {
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
@@ -520,10 +838,123 @@ public class QuickMessagePopup extends Activity implements
         return super.onCreateDialog(id, args);
     }
 
-    /**
-     * Supporting Classes
-     */
+    //==========================================================
+    // Inner classes
+    //==========================================================
 
+    /**
+     * Class copied from ComposeMessageActivity.java
+     * InputFilter which attempts to substitute characters that cannot be
+     * encoded in the limited GSM 03.38 character set. In many cases this will
+     * prevent the keyboards auto-correction feature from inserting characters
+     * that would switch the message from 7-bit GSM encoding (160 char limit)
+     * to 16-bit Unicode encoding (70 char limit).
+     */
+    private class StripUnicode implements InputFilter {
+
+        private CharsetEncoder gsm =
+            Charset.forName("gsm-03.38-2000").newEncoder();
+
+        private Pattern diacritics =
+            Pattern.compile("\\p{InCombiningDiacriticalMarks}");
+
+        public CharSequence filter(CharSequence source, int start, int end,
+                                   Spanned dest, int dstart, int dend) {
+
+            Boolean unfiltered = true;
+            StringBuilder output = new StringBuilder(end - start);
+
+            for (int i = start; i < end; i++) {
+                char c = source.charAt(i);
+
+                // Character is encodable by GSM, skip filtering
+                if (gsm.canEncode(c)) {
+                    output.append(c);
+                }
+                // Character requires Unicode, try to replace it
+                else {
+                    unfiltered = false;
+                    String s = String.valueOf(c);
+
+                    // Try normalizing the character into Unicode NFKD form and
+                    // stripping out diacritic mark characters.
+                    s = Normalizer.normalize(s, Normalizer.Form.NFKD);
+                    s = diacritics.matcher(s).replaceAll("");
+
+                    // Special case characters that don't get stripped by the
+                    // above technique.
+                    s = s.replace("Œ", "OE");
+                    s = s.replace("œ", "oe");
+                    s = s.replace("Ł", "L");
+                    s = s.replace("ł", "l");
+                    s = s.replace("Đ", "DJ");
+                    s = s.replace("đ", "dj");
+                    s = s.replace("Α", "A");
+                    s = s.replace("Β", "B");
+                    s = s.replace("Ε", "E");
+                    s = s.replace("Ζ", "Z");
+                    s = s.replace("Η", "H");
+                    s = s.replace("Ι", "I");
+                    s = s.replace("Κ", "K");
+                    s = s.replace("Μ", "M");
+                    s = s.replace("Ν", "N");
+                    s = s.replace("Ο", "O");
+                    s = s.replace("Ρ", "P");
+                    s = s.replace("Τ", "T");
+                    s = s.replace("Υ", "Y");
+                    s = s.replace("Χ", "X");
+                    s = s.replace("α", "A");
+                    s = s.replace("β", "B");
+                    s = s.replace("γ", "Γ");
+                    s = s.replace("δ", "Δ");
+                    s = s.replace("ε", "E");
+                    s = s.replace("ζ", "Z");
+                    s = s.replace("η", "H");
+                    s = s.replace("θ", "Θ");
+                    s = s.replace("ι", "I");
+                    s = s.replace("κ", "K");
+                    s = s.replace("λ", "Λ");
+                    s = s.replace("μ", "M");
+                    s = s.replace("ν", "N");
+                    s = s.replace("ξ", "Ξ");
+                    s = s.replace("ο", "O");
+                    s = s.replace("π", "Π");
+                    s = s.replace("ρ", "P");
+                    s = s.replace("σ", "Σ");
+                    s = s.replace("τ", "T");
+                    s = s.replace("υ", "Y");
+                    s = s.replace("φ", "Φ");
+                    s = s.replace("χ", "X");
+                    s = s.replace("ψ", "Ψ");
+                    s = s.replace("ω", "Ω");
+                    s = s.replace("ς", "Σ");
+
+                    output.append(s);
+                }
+            }
+
+            // No changes were attempted, so don't return anything
+            if (unfiltered) {
+                return null;
+            }
+            // Source is a spanned string, so copy the spans from it
+            else if (source instanceof Spanned) {
+                SpannableString spannedoutput = new SpannableString(output);
+                TextUtils.copySpansFrom(
+                    (Spanned) source, start, end, null, spannedoutput, 0);
+
+                return spannedoutput;
+            }
+            // Source is a vanilla charsequence, so return output as-is
+            else {
+                return output;
+            }
+        }
+    }
+
+    /**
+     * Message Pager class, used to display and navigate through the ViewPager pages
+     */
     private class MessagePagerAdapter extends PagerAdapter
                     implements ViewPager.OnPageChangeListener {
 
@@ -565,7 +996,7 @@ public class QuickMessagePopup extends Activity implements
 
                 // Set the general fields
                 qmFromName.setText(qm.getFromName());
-                qmTimestamp.setText(qm.getTimestamp());
+                qmTimestamp.setText(MessageUtils.formatTimeStampString(mContext, qm.getTimestamp(), mFullTimestamp));
                 updateContactBadge(qmContactBadge, qm.getFromNumber()[0], false);
                 qmMessageText.setText(formatMessage(qm.getMessageBody()));
 
@@ -610,8 +1041,19 @@ public class QuickMessagePopup extends Activity implements
                     }
                 });
 
+                LengthFilter lengthFilter = new LengthFilter(MmsConfig.getMaxTextLimit());
+
+                if (mStripUnicode) {
+                    qmReplyText.setFilters(new InputFilter[] { new StripUnicode(), lengthFilter });
+                } else {
+                    qmReplyText.setFilters(new InputFilter[] { lengthFilter });
+                }
+
                 QmTextWatcher.getQuickReplyCounterText(qmReplyText.getText().toString(),
                         qmTextCounter, qmSendButton, qmTemplatesButton, mNumTemplates);
+
+                // Add the context menu
+                registerForContextMenu(qmReplyText);
 
                 // Store the EditText object for future use
                 qm.setEditText(qmReplyText);
@@ -644,6 +1086,14 @@ public class QuickMessagePopup extends Activity implements
             return layout;
         }
 
+        /**
+         * This method sends the supplied message in reply to the supplied qm and then
+         * moves to the next or previous message as appropriate. If this is the last qm
+         * in the MessageList, we end by clearing the notification and calling finish()
+         *
+         * @param message - message to send
+         * @param qm - qm we are replying to (for sender details)
+         */
         private void sendMessageAndMoveOn(String message, QuickMessage qm) {
             sendQuickMessage(message, qm);
             // Close the current QM and move on
