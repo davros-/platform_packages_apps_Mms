@@ -445,7 +445,11 @@ public class QuickMessagePopup extends Activity implements
                     // Get the currently visible message and append the smiley
                     QuickMessage qm = mMessageList.get(mCurrentPage);
                     if (qm != null) {
-                        qm.getEditText().append(smiley);
+                        // add the smiley at the cursor location or replace selected
+                        int start = qm.getEditText().getSelectionStart();
+                        int end = qm.getEditText().getSelectionEnd();
+                        qm.getEditText().getText().replace(Math.min(start, end),
+                                Math.max(start, end), smiley);
                     }
 
                     dialog.dismiss();
@@ -494,7 +498,11 @@ public class QuickMessagePopup extends Activity implements
                     // Get the currently visible message and append the emoji
                     QuickMessage qm = mMessageList.get(mCurrentPage);
                     if (qm != null) {
-                        qm.getEditText().append(emoji);
+                        // add the emoji at the cursor location or replace selected
+                        int start = qm.getEditText().getSelectionStart();
+                        int end = qm.getEditText().getSelectionEnd();
+                        qm.getEditText().getText().replace(Math.min(start, end),
+                                Math.max(start, end), emoji);
                     }
                     mEmojiDialog.dismiss();
                     return true;
@@ -507,7 +515,11 @@ public class QuickMessagePopup extends Activity implements
                     // Get the currently visible message and append the emoji
                     QuickMessage qm = mMessageList.get(mCurrentPage);
                     if (qm != null) {
-                        qm.getEditText().append(editText.getText());
+                        // add the emoji at the cursor location or replace selected
+                        int start = qm.getEditText().getSelectionStart();
+                        int end = qm.getEditText().getSelectionEnd();
+                        qm.getEditText().getText().replace(Math.min(start, end),
+                                Math.max(start, end), editText.getText());
                     }
                     mEmojiDialog.dismiss();
                 }
@@ -829,7 +841,11 @@ public class QuickMessagePopup extends Activity implements
                        // Get the currently visible message and append text
                        QuickMessage qm = mMessageList.get(mCurrentPage);
                        if (qm != null) {
-                           qm.getEditText().append(text);
+                           // insert the template text at the cursor location or replace selected
+                           int start = qm.getEditText().getSelectionStart();
+                           int end = qm.getEditText().getSelectionEnd();
+                           qm.getEditText().getText().replace(Math.min(start, end),
+                                   Math.max(start, end), text);
                        }
                     }
                 });
