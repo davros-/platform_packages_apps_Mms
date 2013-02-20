@@ -931,8 +931,6 @@
     <string name="notification_multiple_text_privacy_mode"><xliff:g id="number" example="3">%1$s</xliff:g> unread messages</string>
     <string name="notification_ticker_privacy_mode">New message received</string>
 
-
-    <!-- CYANOGENMOD EDITS END -->
     <!-- Mms Breath -->
     <string name="mms_breath">Breathing SMS</string>
     <string name="mms_breath_summary">Will give your statusbar notifications a breathing effect</string>
@@ -947,4 +945,10 @@
     <string name="msg_sig_summary">Set a custom Signature for messages</string>
     <string name="msg_sig_enter_text">Enter signature text</string>
 
+    <!-- Insert contact information -->
+    <string name="menu_insert_contact_info">Insert contact info</string>
+    <string name="cannot_find_contact">Can\'t insert information of the chosen contact</string>
+    <string name="insert_contact_info_positive_button">Insert</string>
+
+    <!-- CYANOGENMOD EDITS END -->
 </resources>
