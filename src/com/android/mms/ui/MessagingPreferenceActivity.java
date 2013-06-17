@@ -70,9 +70,12 @@ public class MessagingPreferenceActivity extends PreferenceActivity
     public static final String RETRIEVAL_DURING_ROAMING = "pref_key_mms_retrieval_during_roaming";
     public static final String AUTO_DELETE              = "pref_key_auto_delete";
     public static final String GROUP_MMS_MODE           = "pref_key_mms_group_mms";
+<<<<<<< HEAD
     public static final String MMS_BREATH               = "mms_breath";
     public static final String MMS_SAVE_LOCATION        = "pref_save_location";
     public static final String MSG_SIGNATURE            = "pref_msg_signature";
+=======
+>>>>>>> parent of 524be96... MMS Breath
 
     // Emoji
     public static final String ENABLE_EMOJIS             = "pref_key_enable_emojis";
@@ -158,7 +161,6 @@ public class MessagingPreferenceActivity extends PreferenceActivity
     private CheckBoxPreference mEnableQmCloseAllPref;
     private CheckBoxPreference mEnableQmDarkThemePref;
 
-    private CheckBoxPreference mMMSBreath;
 
     private EditTextPreference mSignature;
     private String mSignatureText;
@@ -203,8 +205,6 @@ public class MessagingPreferenceActivity extends PreferenceActivity
         mGestureSensitivity = (ListPreference) findPreference(GESTURE_SENSITIVITY);
         mUnicodeStripping = (ListPreference) findPreference(UNICODE_STRIPPING);
         mUnicodeStrippingEntries = getResources().getTextArray(R.array.pref_unicode_stripping_entries);
-        mMMSBreath = (CheckBoxPreference) findPreference(MMS_BREATH);
-        mMMSBreath.setChecked(mMMSBreath.isChecked());
 
         mSignature = (EditTextPreference) findPreference(MSG_SIGNATURE);
         mSignature.setOnPreferenceChangeListener(this);
@@ -493,9 +493,6 @@ public class MessagingPreferenceActivity extends PreferenceActivity
 
             // Update "enable dark theme" checkbox state
             mEnableQmDarkThemePref.setEnabled(!mEnablePrivacyModePref.isChecked());
-
-        } else if (preference == mMMSBreath) {
-            mMMSBreath.setChecked(mMMSBreath.isChecked());
 
         } else if (preference == mEnableQuickMessagePref) {
             // Update the actual "enable quickmessage" value that is stored in secure settings.
