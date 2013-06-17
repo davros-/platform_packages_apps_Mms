@@ -72,7 +72,7 @@ public class MessagingPreferenceActivity extends PreferenceActivity
     public static final String GROUP_MMS_MODE           = "pref_key_mms_group_mms";
     public static final String MMS_BREATH               = "mms_breath";
     public static final String MMS_SAVE_LOCATION        = "pref_save_location";
-    public static final String MSG_SIGNATURE            = "pref_msg_signature";h
+    public static final String MSG_SIGNATURE            = "pref_msg_signature";
 
     // Emoji
     public static final String ENABLE_EMOJIS             = "pref_key_enable_emojis";
